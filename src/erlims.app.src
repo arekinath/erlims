@@ -1,0 +1,22 @@
+{application, erlims,
+ [
+  {description, "UQ IMS client"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {included_applications, [
+  ]},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  lager,
+                  kerlberos,
+                  gun,
+                  jsx,
+                  getopt
+                 ]},
+  {mod, { ims_app, []}},
+  {env, [
+    ]},
+  {licenses, ["BSD-2-Clause"]},
+  {links, [{"GitHub", "https://github.com/eait-itig/erlims"}]}
+ ]}.
