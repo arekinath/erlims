@@ -59,7 +59,8 @@ main(Args) ->
         {help, $h, undefined, undefined, "Show usage information"},
         {verbose, $v, undefined, undefined, "Set debug log level"},
         {user, $u, "username", string, "Username to log in with"},
-        {ebox, $e, "path", string, "Path to ebox containing user password"}
+        {ebox, $e, "path", string, "Path to ebox containing user password"},
+        {svcpw, $P, "svcpass", string, "Password for IMS service account"}
     ],
 
     case getopt:parse(OptSpecList, Args) of
@@ -97,13 +98,40 @@ main_opts(Options) ->
     end,
     User = [proplists:get_value(user, Options)],
 
-    Pw = case proplists:get_value(ebox, Options) of
+    SvcTkt = case proplists:get_value(svcpw, Options) of
         undefined ->
-            termutils:getpw();
-        Path ->
-            unlock_ebox(Path)
+            case proplists:get_value(ebox, Options) of
+                undefined ->
+                    get_svc_ticket(User, termutils:getpw());
+                Path ->
+                    get_svc_ticket(User, unlock_ebox(Path))
+            end;
+        SvcPw ->
+            fake_svc_ticket(User, unicode:characters_to_binary(SvcPw, utf8))
     end,
 
+    lager:debug("connecting to auth.ims..."),
+    {ok, ImsClient} = ims_client:open(),
+
+    lager:debug("authenticating... "),
+    {continue, Token0, S0} = gss_spnego:initiate(#{
+        ticket => SvcTkt,
+        chan_bindings => <<0:128/big>>,
+        mutual_auth => true
+        }),
+    case continue(ImsClient, Token0, S0) of
+        {ok, #{<<"sessionid">> := SessId, <<"user">> := FinalUser}} ->
+            io:format("started session ~s as ~s\n", [SessId, FinalUser]),
+            halt(0);
+        {ok, Resp} ->
+            io:format("ok, response: ~p\n", [Resp]),
+            halt(0);
+        {error, Why} ->
+            io:format("erlims: error: ~p\n", [Why]),
+            halt(1)
+    end.
+
+get_svc_ticket(User, Pw) ->
     lager:debug("authing to krb5..."),
     {ok, R0} = krb_realm:open("KRB5.UQ.EDU.AU"),
     case krb_realm:authenticate(R0, User, Pw) of
@@ -139,27 +167,48 @@ main_opts(Options) ->
         "$*", User, "$", TktRealm, "$", lists:join("/", SNameParts),
         "*$", D0Hex, "$", D1Hex]),
     lager:debug("hash = ~s", [Hash]),
+    SvcTkt.
 
-    lager:debug("connecting to auth.ims..."),
-    {ok, ImsClient} = ims_client:open(),
-
-    lager:debug("authenticating... "),
-    {continue, Token0, S0} = gss_spnego:initiate(#{
-        ticket => SvcTkt,
-        chan_bindings => <<0:128/big>>,
-        mutual_auth => true
-        }),
-    case continue(ImsClient, Token0, S0) of
-        {ok, #{<<"sessionid">> := SessId, <<"user">> := FinalUser}} ->
-            io:format("started session ~s as ~s\n", [SessId, FinalUser]),
-            halt(0);
-        {ok, Resp} ->
-            io:format("ok, response: ~p\n", [Resp]),
-            halt(0);
-        {error, Why} ->
-            io:format("erlims: error: ~p\n", [Why]),
-            halt(1)
-    end.
+fake_svc_ticket(User, SvcPw) ->
+    SvcKey = krb_crypto:string_to_key(rc4_hmac, SvcPw,
+        <<"UQ.EDU.AUauth.ims.its.uq.edu.au$">>),
+    TktKey = krb_crypto:random_to_key(rc4_hmac),
+    Flags = [renewable,forwardable,proxiable,initial],
+    T0 = krb_proto:system_time_to_krbtime(erlang:system_time(second) - 5,
+        second),
+    T1 = krb_proto:system_time_to_krbtime(erlang:system_time(second) + 300,
+        second),
+    ETP = #'EncTicketPart'{
+        key = TktKey,
+        flags = sets:from_list(Flags),
+        crealm = "KRB5.UQ.EDU.AU",
+        cname = #'PrincipalName'{'name-type' = 1, 'name-string' = User},
+        authtime = T0,
+        starttime = T0,
+        endtime = T1,
+        transited = #'TransitedEncoding'{
+            'tr-type' = 1,
+            contents = <<"">>
+        }
+    },
+    Tkt0 = #'Ticket'{
+        'tkt-vno' = 5,
+        realm = "UQ.EDU.AU",
+        sname = #'PrincipalName'{'name-type' = 2,
+            'name-string' = ["HTTP", "auth.ims.its.uq.edu.au"]},
+        'enc-part' = ETP
+    },
+    Tkt1 = krb_proto:encrypt(SvcKey, kdc_rep_ticket, Tkt0),
+    #{ticket => Tkt1,
+      flags => Flags,
+      authtime => T0,
+      starttime => T0,
+      endtime => T1,
+      realm => "KRB5.UQ.EDU.AU",
+      principal => User,
+      svc_realm => "UQ.EDU.AU",
+      svc_principal => ["HTTP", "auth.ims.its.uq.edu.au"],
+      key => TktKey}.
 
 continue(C0, Token0, S0) ->
     case ims_client:start(Token0, C0) of
