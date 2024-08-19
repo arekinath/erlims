@@ -40,10 +40,43 @@
 
 -opaque client() :: #?MODULE{}.
 
+start_gun(_, Timeout) when Timeout >= 30000 ->
+    {error, timeout};
+start_gun(TOpts, Timeout) ->
+    Opts = #{
+        connect_timeout => Timeout,
+        tls_handshake_timeout => Timeout,
+        domain_lookup_timeout => Timeout,
+        retry => 1,
+        tcp_opts => [
+            {send_timeout, Timeout},
+            {send_timeout_close, true},
+            {keepalive, true}
+        ],
+        transport => tls,
+        tls_opts => TOpts
+        },
+    {ok, Gun} = gun:open("auth.ims.its.uq.edu.au", 443, Opts),
+    case gun:await_up(Gun, Timeout * 2) of
+        {error, timeout} -> start_gun(TOpts, Timeout * 2);
+        {error, Why} -> {error, Why};
+        {ok, _Proto} -> {ok, Gun}
+    end.
+
 -spec open() -> {ok, client()}.
 open() ->
-    {ok, Gun} = gun:open("auth.ims.its.uq.edu.au", 443),
-    {ok, _Proto} = gun:await_up(Gun, 30000),
+    application:ensure_all_started(public_key),
+    code:load_file(public_key),
+    TOpts0 = [{verify, verify_peer}],
+    TOpts1 = case erlang:function_exported(public_key, cacerts_get, 0) of
+        true ->
+            CACerts = public_key:cacerts_get(),
+            CADers = [Der || {cert, Der, _} <- CACerts],
+            TOpts0 ++ [{cacerts, CADers}];
+        false ->
+            TOpts0
+    end,
+    {ok, Gun} = start_gun(TOpts1, 500),
     {ok, #?MODULE{gun = Gun}}.
 
 -spec start(token(), client()) ->

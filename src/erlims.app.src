@@ -12,7 +12,8 @@
                   kerlberos,
                   gun,
                   jsx,
-                  getopt
+                  getopt,
+                  public_key
                  ]},
   {mod, { ims_app, []}},
   {env, [
