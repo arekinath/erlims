@@ -40,8 +40,10 @@
 getpw() ->
     case io:setopts([binary, {echo, false}]) of
         ok ->
+            file:write(standard_error, "\e[2K\r"),
             PwLine = io:get_line(<<"Password:">>),
             ok = io:setopts([binary, {echo, true}]),
+            file:write(standard_error, "\e[2K\r"),
             io:format("\n"),
             [Pw | _] = binary:split(PwLine, <<"\n">>),
             Pw;
